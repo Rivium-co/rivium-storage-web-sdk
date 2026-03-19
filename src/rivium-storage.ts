@@ -222,7 +222,7 @@ export class RiviumStorage {
     } else if (data instanceof Blob) {
       blob = data;
     } else {
-      blob = new Blob([data], { type: contentType });
+      blob = new Blob([data as BlobPart], { type: contentType });
     }
 
     formData.append('file', blob, fileName);

@@ -1,5 +1,5 @@
 {
-  "name": "@rivium-storage/web",
+  "name": "@rivium/storage-web",
   "version": "0.1.0",
   "description": "Official Web SDK for RiviumStorage - File storage and image transformation service",
   "main": "dist/index.js",
@@ -17,7 +17,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "npx tsc",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

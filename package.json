@@ -1,0 +1,42 @@
+{
+  "name": "@rivium-storage/web",
+  "version": "0.1.0",
+  "description": "Official Web SDK for RiviumStorage - File storage and image transformation service",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "rivium-storage",
+    "rivium",
+    "storage",
+    "file-upload",
+    "image-transformation",
+    "cdn",
+    "browser",
+    "web"
+  ],
+  "author": "Rivium",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rivium-co/rivium-storage-web-sdk"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

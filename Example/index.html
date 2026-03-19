@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RiviumStorage SDK Example</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: #E8DEF8;
+    }
+    .header h1 { font-size: 18px; color: #1C1B1F; }
+    .header button {
+      background: none;
+      border: none;
+      color: #6750A4;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    /* Buttons section */
+    .buttons-section {
+      flex: 2;
+      overflow-y: auto;
+      padding: 16px;
+    }
+    .section-header {
+      margin-top: 16px;
+      margin-bottom: 8px;
+    }
+    .section-header h2 {
+      font-size: 16px;
+      font-weight: 700;
+      color: #6750A4;
+    }
+    .section-header hr {
+      border: none;
+      height: 1px;
+      background: #CAC4D0;
+      margin-top: 6px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 12px 16px;
+      margin: 4px 0;
+      background: #6750A4;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+    }
+    .btn:hover { background: #7E67AE; }
+    .btn:active { background: #553C9A; }
+
+    /* Divider */
+    .divider { height: 1px; background: #CAC4D0; }
+
+    /* Log header */
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+      background: #F5F5F5;
+    }
+    .log-header span:first-child { font-size: 14px; font-weight: 700; color: #1C1B1F; }
+    .log-header span:last-child { font-size: 12px; color: #79747E; }
+
+    /* Log output */
+    .log-section {
+      flex: 3;
+      overflow-y: auto;
+      background: #1C1B1F;
+      padding: 12px;
+    }
+    .log-line {
+      font-family: 'Menlo', 'Courier New', monospace;
+      font-size: 12px;
+      color: #A8DB8F;
+      line-height: 18px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-line.error { color: #F2B8B5; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>RiviumStorage SDK Example</h1>
+    <button id="clear-btn">Clear</button>
+  </div>
+
+  <div class="buttons-section" id="buttons">
+    <!-- Bucket Operations -->
+    <div class="section-header"><h2>Bucket Operations</h2><hr /></div>
+    <button class="btn" data-action="listBuckets">List All Buckets</button>
+    <button class="btn" data-action="getBucketById">Get Bucket by ID</button>
+    <button class="btn" data-action="getBucketByName">Get Bucket by Name</button>
+
+    <!-- File Operations -->
+    <div class="section-header"><h2>File Operations</h2><hr /></div>
+    <button class="btn" data-action="uploadTextFile">Upload Text File</button>
+    <button class="btn" data-action="uploadImage">Upload Image (PNG)</button>
+    <button class="btn" data-action="listFiles">List Files</button>
+    <button class="btn" data-action="getFileById">Get File by ID</button>
+    <button class="btn" data-action="getFileByPath">Get File by Path</button>
+    <button class="btn" data-action="downloadFile">Download File</button>
+    <button class="btn" data-action="deleteFile">Delete File</button>
+    <button class="btn" data-action="deleteByPath">Delete by Path</button>
+    <button class="btn" data-action="deleteMany">Delete Multiple Files</button>
+
+    <!-- URL Generation -->
+    <div class="section-header"><h2>URL Generation</h2><hr /></div>
+    <button class="btn" data-action="generateUrls">Generate All URL Types</button>
+
+    <!-- Image Transformations -->
+    <div class="section-header"><h2>Image Transformations</h2><hr /></div>
+    <button class="btn" data-action="showTransforms">Show All Transform Options</button>
+
+    <!-- Policy Testing -->
+    <div class="section-header"><h2>Policy Testing</h2><hr /></div>
+    <button class="btn" data-action="testNoRules">Test: No Rules (allow all)</button>
+    <button class="btn" data-action="testPrivate">Test: Private (login required)</button>
+    <button class="btn" data-action="testPublicRead">Test: Public Read</button>
+    <button class="btn" data-action="testUserFolders">Test: User Folders</button>
+    <button class="btn" data-action="testImagesOnly">Test: Images Only</button>
+
+    <!-- Error Handling -->
+    <div class="section-header"><h2>Error Handling</h2><hr /></div>
+    <button class="btn" data-action="demonstrateErrorHandling">Demonstrate Error Handling</button>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="log-header">
+    <span>Output Log</span>
+    <span id="log-count">0 entries</span>
+  </div>
+
+  <div class="log-section" id="log-output"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

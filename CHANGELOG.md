@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Every request to Rivium Storage now names the SDK in an `X-Rivium-SDK:
+  web/<version>` header (only the public SDK name and version), like the
+  other Rivium SDKs. New exports `SDK_NAME` and `SDK_VERSION` (kept equal to
+  the package.json version; a test checks it).
+  The Rivium Storage server must allow this header in its CORS settings
+  before this version is released for browsers.
+
 ## 0.2.0
 
 ### Added

@@ -22,6 +22,7 @@
 /// ```
 
 export { RiviumStorage } from './rivium-storage';
+export { SDK_NAME, SDK_VERSION } from './version';
 export { RiviumStorageException } from './models';
 export type {
   RiviumStorageConfig,

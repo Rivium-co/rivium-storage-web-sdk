@@ -25,6 +25,7 @@ export { RiviumStorage } from './rivium-storage';
 export { RiviumStorageException } from './models';
 export type {
   RiviumStorageConfig,
+  RiviumStorageTokenProvider,
   Bucket,
   StorageFile,
   ListFilesResult,

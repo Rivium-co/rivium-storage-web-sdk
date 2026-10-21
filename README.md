@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@rivium-storage/web"><img src="https://img.shields.io/npm/v/@rivium-storage/web.svg" alt="npm" /></a>
+  <a href="https://www.npmjs.com/package/@rivium/storage-web"><img src="https://img.shields.io/npm/v/@rivium/storage-web.svg" alt="npm" /></a>
   <img src="https://img.shields.io/badge/TypeScript-5.0+-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.0+" />
   <img src="https://img.shields.io/badge/Browser-ES2020+-F7DF1E?logo=javascript&logoColor=black" alt="Browser" />
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License" />
@@ -22,13 +22,13 @@
 ## Installation
 
 ```bash
-npm install @rivium-storage/web
+npm install @rivium/storage-web
 ```
 
 ## Quick Start
 
 ```typescript
-import { RiviumStorage } from '@rivium-storage/web';
+import { RiviumStorage } from '@rivium/storage-web';
 
 // Initialize
 const storage = new RiviumStorage({ apiKey: 'YOUR_API_KEY' });
@@ -37,7 +37,7 @@ const storage = new RiviumStorage({ apiKey: 'YOUR_API_KEY' });
 const file = await storage.upload('my-bucket-id', 'images/photo.jpg', imageData, {
   contentType: 'image/jpeg',
 });
-console.log('Uploaded:', file.url ?? file.id);
+console.log('Uploaded:', file.id);
 
 // Download a file
 const data = await storage.download(file.id);
@@ -129,7 +129,7 @@ requests share one provider call.
 
 ## Documentation
 
-For full documentation, visit [rivium.co/docs](https://rivium.co/cloud/rivium-storage/docs/sdks-web).
+For full documentation, visit [rivium.co/docs](https://rivium.co/cloud/rivium-storage/docs/web).
 - [Rivium Cloud](https://rivium.co/cloud)
 - [Rivium Console](https://console.rivium.co)
 

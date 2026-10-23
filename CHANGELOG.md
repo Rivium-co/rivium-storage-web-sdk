@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- **Fixed:** `import` now loads the built package (`dist/index.js`) instead of the TypeScript source, so the SDK works in Next.js, webpack and Node.js ES modules without extra configuration.
+
 ## 0.2.1
 
 - **Breaking:** File requests require a signed-in user (a Rivium user token). Without a token, file calls wait until your app signs a user in; see `isAwaitingUserToken`, `onAwaitingUserToken` and the optional `userTokenWaitTimeout`. `userId` / `setUserId` are removed.

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+package-lock.json
+# Your settings. Never commit them: copy .env.example to .env.local.
+.env
+.env.local
+.env.*.local

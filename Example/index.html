@@ -1,162 +1,268 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RiviumStorage SDK Example</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      background: #fff;
-    }
-
-    /* Header */
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 12px 16px;
-      background: #E8DEF8;
-    }
-    .header h1 { font-size: 18px; color: #1C1B1F; }
-    .header button {
-      background: none;
-      border: none;
-      color: #6750A4;
-      font-weight: 600;
-      font-size: 14px;
-      cursor: pointer;
-    }
-
-    /* Buttons section */
-    .buttons-section {
-      flex: 2;
-      overflow-y: auto;
-      padding: 16px;
-    }
-    .section-header {
-      margin-top: 16px;
-      margin-bottom: 8px;
-    }
-    .section-header h2 {
-      font-size: 16px;
-      font-weight: 700;
-      color: #6750A4;
-    }
-    .section-header hr {
-      border: none;
-      height: 1px;
-      background: #CAC4D0;
-      margin-top: 6px;
-    }
-    .btn {
-      display: block;
-      width: 100%;
-      padding: 12px 16px;
-      margin: 4px 0;
-      background: #6750A4;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      text-align: center;
-    }
-    .btn:hover { background: #7E67AE; }
-    .btn:active { background: #553C9A; }
-
-    /* Divider */
-    .divider { height: 1px; background: #CAC4D0; }
-
-    /* Log header */
-    .log-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 16px;
-      background: #F5F5F5;
-    }
-    .log-header span:first-child { font-size: 14px; font-weight: 700; color: #1C1B1F; }
-    .log-header span:last-child { font-size: 12px; color: #79747E; }
-
-    /* Log output */
-    .log-section {
-      flex: 3;
-      overflow-y: auto;
-      background: #1C1B1F;
-      padding: 12px;
-    }
-    .log-line {
-      font-family: 'Menlo', 'Courier New', monospace;
-      font-size: 12px;
-      color: #A8DB8F;
-      line-height: 18px;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    .log-line.error { color: #F2B8B5; }
-  </style>
+  <title>Rivium Storage Web Example</title>
+  <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
-  <div class="header">
-    <h1>RiviumStorage SDK Example</h1>
-    <button id="clear-btn">Clear</button>
-  </div>
+  <header class="top">
+    <div>
+      <h1>Rivium Storage Web SDK</h1>
+      <p class="sub">Every feature of <code>@rivium/storage-web</code> (local source, <span id="sdk-version"></span>) against the real service.</p>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#setup">Setup</a><a href="#signin">Sign in</a><a href="#waiting">Waiting for sign-in</a><a href="#buckets">Buckets</a>
+      <a href="#upload">Upload</a><a href="#files">Files</a><a href="#show">Show images</a><a href="#links">Links</a>
+      <a href="#transforms">Transforms</a><a href="#errors">Errors</a><a href="#checks">Run all checks</a>
+    </nav>
+  </header>
 
-  <div class="buttons-section" id="buttons">
-    <!-- Bucket Operations -->
-    <div class="section-header"><h2>Bucket Operations</h2><hr /></div>
-    <button class="btn" data-action="listBuckets">List All Buckets</button>
-    <button class="btn" data-action="getBucketById">Get Bucket by ID</button>
-    <button class="btn" data-action="getBucketByName">Get Bucket by Name</button>
+  <main>
+    <div id="setup-problems" class="banner" hidden></div>
 
-    <!-- File Operations -->
-    <div class="section-header"><h2>File Operations</h2><hr /></div>
-    <button class="btn" data-action="uploadTextFile">Upload Text File</button>
-    <button class="btn" data-action="uploadImage">Upload Image (PNG)</button>
-    <button class="btn" data-action="listFiles">List Files</button>
-    <button class="btn" data-action="getFileById">Get File by ID</button>
-    <button class="btn" data-action="getFileByPath">Get File by Path</button>
-    <button class="btn" data-action="downloadFile">Download File</button>
-    <button class="btn" data-action="deleteFile">Delete File</button>
-    <button class="btn" data-action="deleteByPath">Delete by Path</button>
-    <button class="btn" data-action="deleteMany">Delete Multiple Files</button>
+    <!-- ============================================================ -->
+    <section id="setup" class="card">
+      <h2>1. Setup</h2>
+      <p>The page uses only the <strong>public key</strong>. Everything that needs the server secret (user tokens,
+        signed links, creating buckets) goes through <em>your server</em> - here the Node example server
+        (<code>sdk/nodejs/Example</code>, <code>npm run server</code>).</p>
+      <dl id="cfg" class="kv"></dl>
+      <div class="row">
+        <button id="btn-health">Check the example server</button>
+        <button id="btn-setup-buckets">Prepare the test buckets</button>
+      </div>
+      <p class="hint">"Prepare the test buckets" asks the server to create (once) a public bucket and a private
+        images-only bucket with a size limit and executables blocked, both with the rule set
+        <em>Users' own folders</em>: you read and list, and write or delete only under <code>users/{your id}/</code>.</p>
+      <pre id="out-setup" class="out" hidden></pre>
+    </section>
 
-    <!-- URL Generation -->
-    <div class="section-header"><h2>URL Generation</h2><hr /></div>
-    <button class="btn" data-action="generateUrls">Generate All URL Types</button>
+    <!-- ============================================================ -->
+    <section id="signin" class="card">
+      <h2>2. Sign in with a Rivium user token (<code>tokenProvider</code>)</h2>
+      <p><code>new RiviumStorage({ apiKey, tokenProvider })</code>: the provider asks your server for a token
+        (<code>POST /token</code>); the SDK sends it as <code>x-user-token</code>, renews it before it expires, and retries
+        once on <code>token_expired</code> / <code>token_invalid</code>. The rules then know who the user is - and nobody can
+        pretend to be someone else.</p>
+      <p class="warn">The demo server mints a token for whatever user id you type. A real server signs its user in first
+        and mints the token for that user only.</p>
+      <div class="row">
+        <label>User id <input id="user-id" autocomplete="off" /></label>
+        <button id="btn-signin">Sign in / switch user (<code>refreshUserToken()</code>)</button>
+        <button id="btn-signout" class="secondary">Sign out</button>
+      </div>
+      <div class="row">
+        <button id="btn-set-token" class="secondary"><code>setUserToken(token)</code></button>
+        <button id="btn-static-token" class="secondary">Option <code>userToken</code> (no provider)</button>
+      </div>
+      <p id="awaiting-status" class="hint" aria-live="polite"></p>
+      <p class="hint">Using <strong>Rivium Auth</strong>? No token server needed: its token is the Rivium user token.
+        <code>new RiviumStorage({ apiKey, tokenProvider: () =&gt; auth.getToken() })</code> with
+        <code>auth = createRiviumAuth({ apiKey })</code> from <code>@rivium/auth-web</code>, and call
+        <code>storage.refreshUserToken()</code> from <code>auth.onAuthStateChanged</code>. This page keeps the demo token
+        server so it can sign in as any test user.</p>
+      <pre id="out-signin" class="out" hidden></pre>
+    </section>
 
-    <!-- Image Transformations -->
-    <div class="section-header"><h2>Image Transformations</h2><hr /></div>
-    <button class="btn" data-action="showTransforms">Show All Transform Options</button>
+    <!-- ============================================================ -->
+    <section id="waiting" class="card">
+      <h2>3. Calls wait until a user signs in</h2>
+      <p>File requests always need a signed-in user. With no token (the provider returns <code>null</code>), <code>upload</code>,
+        <code>listFiles</code>, <code>download</code>, <code>delete</code> ... send nothing and don't fail: they wait.
+        <code>storage.isAwaitingUserToken</code> is <code>true</code> and <code>storage.onAwaitingUserToken(cb)</code> is called
+        once, so the app can show its sign-in screen. After sign-in, <code>refreshUserToken()</code> (or
+        <code>setUserToken(token)</code>) lets every waiting call go on, in order. Option <code>userTokenWaitTimeout</code>
+        makes them fail with <code>token_required</code> instead (see Errors).</p>
+      <div class="row">
+        <button id="btn-wait">Sign out, then <code>listFiles()</code></button>
+      </div>
+      <p class="hint">Then press <em>Sign in</em> in section 2: the waiting <code>listFiles()</code> completes by itself.</p>
+      <pre id="out-wait" class="out" hidden></pre>
+    </section>
 
-    <!-- Policy Testing -->
-    <div class="section-header"><h2>Policy Testing</h2><hr /></div>
-    <button class="btn" data-action="testNoRules">Test: No Rules (allow all)</button>
-    <button class="btn" data-action="testPrivate">Test: Private (login required)</button>
-    <button class="btn" data-action="testPublicRead">Test: Public Read</button>
-    <button class="btn" data-action="testUserFolders">Test: User Folders</button>
-    <button class="btn" data-action="testImagesOnly">Test: Images Only</button>
+    <!-- ============================================================ -->
+    <section id="buckets" class="card">
+      <h2>4. Buckets</h2>
+      <p>Apps can read buckets; creating and changing them is for your server (Node SDK) or the Console.</p>
+      <div class="row">
+        <button id="btn-list-buckets"><code>listBuckets()</code></button>
+        <button id="btn-get-bucket"><code>getBucket(id)</code></button>
+        <button id="btn-get-bucket-name"><code>getBucketByName(name)</code></button>
+      </div>
+      <pre id="out-buckets" class="out" hidden></pre>
+    </section>
 
-    <!-- Error Handling -->
-    <div class="section-header"><h2>Error Handling</h2><hr /></div>
-    <button class="btn" data-action="demonstrateErrorHandling">Demonstrate Error Handling</button>
-  </div>
+    <!-- ============================================================ -->
+    <section id="upload" class="card">
+      <h2>5. Upload</h2>
+      <p><code>upload(bucket, path, File | Blob | Uint8Array | string, { contentType, metadata, onProgress })</code>. Files go to
+        <code id="up-folder"></code> - the only folder the rules let you write to.</p>
+      <div class="row">
+        <label>Bucket
+          <select id="up-bucket"><option value="public">public</option><option value="private">private (images, size limit)</option></select>
+        </label>
+        <label>Content type <input id="up-content-type" placeholder="from the file" /></label>
+      </div>
+      <label class="block">Metadata (JSON) <textarea id="up-metadata" rows="2">{ "source": "web-example" }</textarea></label>
+      <div id="drop-zone" class="drop" tabindex="0" role="button" aria-label="Choose a file or drop it here">
+        <span>Drop a file here, or <u>choose one</u></span>
+        <input id="file-input" type="file" hidden />
+      </div>
+      <div class="progress" id="up-progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div></div><span></span></div>
+      <p class="hint">The bar follows <code>onProgress({ bytesSent, totalBytes })</code>. Try the 5 MB PNG (noise pixels, so it does not compress) to watch it move; on a fast
+        connection small files finish in one step.</p>
+      <div class="row">
+        <button id="btn-up-string" class="secondary">Text (string)</button>
+        <button id="btn-up-bytes" class="secondary">PNG (Uint8Array)</button>
+        <button id="btn-up-unicode" class="secondary">رسید-۸۸۱۲.pdf</button>
+        <button id="btn-up-spaces" class="secondary">my holiday photo.png</button>
+        <button id="btn-up-large" class="secondary">5 MB generated PNG (progress)</button>
+      </div>
+      <pre id="out-upload" class="out" hidden></pre>
+    </section>
 
-  <div class="divider"></div>
+    <!-- ============================================================ -->
+    <section id="files" class="card">
+      <h2>6. Files: list, get, download, delete</h2>
+      <div class="row">
+        <label>Bucket <select id="ls-bucket"><option value="public">public</option><option value="private">private</option></select></label>
+        <label>Prefix <input id="ls-prefix" /></label>
+        <label>Limit <input id="ls-limit" type="number" min="1" max="1000" value="5" class="narrow" /></label>
+        <button id="btn-list"><code>listFiles()</code></button>
+        <button id="btn-next" class="secondary" disabled>Next page (cursor)</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>Path</th><th>Type</th><th>Size</th><th>Actions</th></tr></thead>
+          <tbody id="files-body"><tr><td colspan="5" class="muted">Press listFiles().</td></tr></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <button id="btn-delete-selected" class="danger"><code>deleteMany(selected ids)</code></button>
+        <label>Path <input id="del-path" placeholder="users/.../file.txt" /></label>
+        <button id="btn-delete-path" class="danger"><code>deleteByPath(bucket, path)</code></button>
+      </div>
+      <p>Current file: <strong id="current-file">none - upload one or press "Use" in the table</strong></p>
+      <div class="row">
+        <button id="btn-get-file"><code>getFile(id)</code></button>
+        <button id="btn-get-by-path"><code>getFileByPath(bucket, path)</code></button>
+        <button id="btn-download"><code>download(id)</code></button>
+        <button id="btn-delete" class="danger"><code>delete(id)</code></button>
+        <a id="download-link" hidden>Save the downloaded file</a>
+      </div>
+      <pre id="out-files" class="out" hidden></pre>
+    </section>
 
-  <div class="log-header">
-    <span>Output Log</span>
-    <span id="log-count">0 entries</span>
-  </div>
+    <!-- ============================================================ -->
+    <section id="show" class="card">
+      <h2>7. Show an image the right way</h2>
+      <p>An <code>&lt;img src&gt;</code> sends no headers. <code>getUrl(id)</code>, <code>getDownloadUrl(id)</code> and
+        <code>getTransformUrl(id)</code> are <em>API addresses</em> that need <code>x-api-key</code> (and the user token),
+        so they never go in an <code>&lt;img&gt;</code>. Use:</p>
+      <ul>
+        <li><strong>Public bucket</strong>: the file's public link - fetch <code>getUrl(id)</code> with the key, it answers <code>{ url }</code>.</li>
+        <li><strong>Private bucket</strong>: <code>download(id)</code> (sends the token, follows the rules) and show the bytes as a blob URL,
+          or a time-limited <strong>signed link</strong> from your server.</li>
+      </ul>
+      <div class="row">
+        <button id="btn-show-public">Public link</button>
+        <button id="btn-show-download">download() + blob URL</button>
+        <button id="btn-show-signed">Signed link (your server)</button>
+        <button id="btn-show-wrong" class="secondary">Wrong: &lt;img src=getUrl(id)&gt;</button>
+      </div>
+      <div class="images">
+        <figure><img id="img-public" alt="Public link result" /><figcaption>public link</figcaption></figure>
+        <figure><img id="img-download" alt="download() result" /><figcaption>download() blob</figcaption></figure>
+        <figure><img id="img-signed" alt="Signed link result" /><figcaption>signed link</figcaption></figure>
+        <figure><img id="img-wrong" alt="Wrong way result" /><figcaption>getUrl in &lt;img&gt; (fails)</figcaption></figure>
+      </div>
+      <pre id="out-show" class="out" hidden></pre>
+    </section>
 
-  <div class="log-section" id="log-output"></div>
+    <!-- ============================================================ -->
+    <section id="links" class="card">
+      <h2>8. Links: public, download, signed download, signed upload</h2>
+      <div class="row">
+        <button id="btn-public-url"><code>getUrl(id)</code> -> public link</button>
+        <button id="btn-download-url"><code>getDownloadUrl(id)</code></button>
+        <button id="btn-signed-url">Signed download link (open it)</button>
+      </div>
+      <pre id="out-links" class="out" hidden></pre>
+      <h3>Signed upload</h3>
+      <p>Your server makes an upload link (<code>POST /signed-upload</code>, server secret); the browser PUTs the file straight
+        to storage with the same <code>Content-Type</code>; then <code>POST /confirm-upload</code> registers it right away
+        (else it appears on the next listing, or within about 20 s). Size, type, executables and rules are checked again when it arrives.</p>
+      <div class="row">
+        <label>Bucket <select id="signed-bucket"><option value="public">public</option><option value="private">private</option></select></label>
+        <input id="signed-file" type="file" />
+        <button id="btn-signed-upload">Signed upload</button>
+      </div>
+      <pre id="out-signed-upload" class="out" hidden></pre>
+    </section>
+
+    <!-- ============================================================ -->
+    <section id="transforms" class="card">
+      <h2>9. Image transforms</h2>
+      <p><code>getTransformUrl(id, { width, height, fit, format, quality, blur, sharpen, rotate })</code> builds the address;
+        the page fetches it <em>with headers</em> and shows the bytes. Works on the current file (an image).</p>
+      <div class="grid">
+        <label>width <input id="tf-width" type="number" min="1" max="4096" value="200" /></label>
+        <label>height <input id="tf-height" type="number" min="1" max="4096" value="200" /></label>
+        <label>fit <select id="tf-fit"><option value="">-</option><option>cover</option><option>contain</option><option>fill</option><option>inside</option><option>outside</option></select></label>
+        <label>format <select id="tf-format"><option value="">-</option><option>jpeg</option><option>png</option><option selected>webp</option><option>avif</option></select></label>
+        <label>quality <input id="tf-quality" type="number" min="1" max="100" value="80" /></label>
+        <label>blur <input id="tf-blur" type="number" min="0" max="20" /></label>
+        <label>sharpen <input id="tf-sharpen" type="number" min="0" max="10" /></label>
+        <label>rotate <select id="tf-rotate"><option value="">-</option><option>90</option><option>180</option><option>270</option></select></label>
+      </div>
+      <div class="row" id="tf-presets">
+        <button id="btn-transform">Transform</button>
+        <button class="secondary" data-preset="avatar">Avatar 100x100 cover webp</button>
+        <button class="secondary" data-preset="placeholder">Blurred placeholder</button>
+        <button class="secondary" data-preset="rotate">Rotate 90 png</button>
+        <button class="secondary" data-preset="avif">AVIF q50</button>
+      </div>
+      <p class="mono" id="tf-url"></p>
+      <div class="images"><figure><img id="img-transform" alt="Transformed image" /><figcaption id="tf-caption">result</figcaption></figure></div>
+      <pre id="out-transform" class="out" hidden></pre>
+
+      <h3>Public bucket: header-free link</h3>
+      <p><code>getPublicUrl(publicFileId, options)</code> with the options above returns the public link with them
+        (<code>…/public/&lt;bucketId&gt;/&lt;path&gt;?w=200&amp;f=webp</code>). The page puts it in a plain
+        <code>&lt;img src&gt;</code>: <em>no headers</em>, and the CDN caches it. Works on the current file when it is an
+        image in the public bucket.</p>
+      <p class="hint">Use a few fixed sizes: one image keeps at most 50 variants (option combinations); a new one beyond
+        that is refused (429 too_many_variants). The same options always give the same URL, so a second view is a cache hit.</p>
+      <div class="row"><button id="btn-transform-public">Show the public image link</button></div>
+      <p class="mono" id="tf-public-url"></p>
+      <div class="images"><figure><img id="img-transform-public" alt="Public transformed image" /><figcaption id="tf-public-caption">public link, no headers</figcaption></figure></div>
+      <pre id="out-transform-public" class="out" hidden></pre>
+    </section>
+
+    <!-- ============================================================ -->
+    <section id="errors" class="card">
+      <h2>10. Errors</h2>
+      <p>Every failure is a <code>RiviumStorageException</code> with <code>statusCode</code>, <code>code</code> (when the server sends one)
+        and <code>message</code>. Each button triggers one on purpose and compares it with what is expected.</p>
+      <div class="row" id="error-buttons"></div>
+      <pre id="out-errors" class="out" hidden></pre>
+    </section>
+
+    <!-- ============================================================ -->
+    <section id="checks" class="card">
+      <h2>11. Run all checks</h2>
+      <p>Runs every feature in order as the signed-in user, with pass / fail per step, then deletes what it uploaded.
+        Needs the example server and the test buckets.</p>
+      <div class="row">
+        <button id="btn-run-checks">Run all checks</button>
+        <label class="check"><input type="checkbox" id="chk-slow" /> include slow checks (token expiry, about 70 s)</label>
+      </div>
+      <p id="checks-summary" class="summary"></p>
+      <ol id="checks-list" class="checks"></ol>
+    </section>
+  </main>
 
   <script type="module" src="/src/main.ts"></script>
 </body>

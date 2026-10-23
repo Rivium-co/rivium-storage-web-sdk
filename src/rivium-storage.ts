@@ -1,5 +1,17 @@
 import { RiviumStorageException } from './models';
 import { SDK_HEADER, SDK_HEADER_VALUE } from './version';
+import { StorageErrorCode } from './error-codes';
+import {
+  encodePathSegments,
+  bucketSegment,
+  fileIdSegment,
+  checkUploadPath,
+  transformQuery,
+  publicImageUrl,
+} from './url-segments';
+import { contentTypeForPath, fileExtension, CONTENT_TYPES_BY_EXTENSION } from './file-types';
+import { fetchTransport, xhrTransport, createProgressReporter } from './progress';
+import type { Transport } from './progress';
 import type {
   RiviumStorageConfig,
   Bucket,
@@ -15,34 +27,25 @@ import type {
 const API_BASE_URL = 'https://storage.rivium.co';
 const DEFAULT_TIMEOUT = 30000;
 
-const MIME_TYPES: Record<string, string> = {
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  avif: 'image/avif',
-  svg: 'image/svg+xml',
-  pdf: 'application/pdf',
-  json: 'application/json',
-  txt: 'text/plain',
-  html: 'text/html',
-  css: 'text/css',
-  js: 'application/javascript',
-  mp4: 'video/mp4',
-  mov: 'video/quicktime',
-  mp3: 'audio/mpeg',
-  wav: 'audio/wav',
-  zip: 'application/zip',
-  doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xls: 'application/vnd.ms-excel',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-};
-
-function getMimeType(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase();
-  return (ext && MIME_TYPES[ext]) || 'application/octet-stream';
+/// The content type an upload is sent with:
+/// 1. `options.contentType` when the app passed one;
+/// 2. else the type the Rivium Storage file types table lists for the path's
+///    extension (the type the Console offers and the server stores);
+/// 3. else the File / Blob's own `type` when it has one (an extension the
+///    table doesn't know, or a path without one);
+/// 4. else `application/octet-stream` (the server then uses the extension).
+///
+/// The table comes before the browser's type because browsers disagree on some
+/// formats (Windows reports `.csv` as `application/vnd.ms-excel`), and a type
+/// the bucket doesn't list would be refused with `type_not_allowed`.
+function uploadContentType(path: string, data: unknown, explicit?: string): string {
+  if (explicit) return explicit;
+  const ext = fileExtension(path);
+  if (ext && Object.prototype.hasOwnProperty.call(CONTENT_TYPES_BY_EXTENSION, ext)) {
+    return CONTENT_TYPES_BY_EXTENSION[ext];
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob && data.type) return data.type;
+  return contentTypeForPath(path);
 }
 
 /// Seconds since the epoch at which a JWT expires, 0 if unreadable.
@@ -92,13 +95,26 @@ export class RiviumStorage {
   private apiKey: string;
   private baseUrl: string;
   private timeout: number;
-  private _userId: string | null;
   private tokenProvider: RiviumStorageTokenProvider | null;
   /** A token set with `userToken` or `setUserToken()` without a provider. */
   private staticUserToken: string | null;
   private userToken: string | null = null;
   private userTokenExpiresAt = 0;
   private userTokenInFlight: Promise<string | null> | null = null;
+  /**
+   * Bumped whenever the token is replaced or dropped (sign-out, refresh). A
+   * provider answer is kept only if no bump happened while it was pending, so
+   * signing out during a provider call can't bring back the previous user's token.
+   */
+  private tokenGeneration = 0;
+  /** `userTokenWaitTimeout` in ms; `null` = wait until a token arrives. */
+  private userTokenWaitTimeout: number | null;
+  /** Calls waiting for a user token, in the order they asked. */
+  private tokenWaiters: Array<{
+    resolve: (token: string) => void;
+    timer: ReturnType<typeof setTimeout> | null;
+  }> = [];
+  private awaitingUserTokenListeners = new Set<() => void>();
 
   /** Seconds before expiry at which a token is replaced. */
   private static readonly TOKEN_REFRESH_SKEW_S = 60;
@@ -114,22 +130,10 @@ export class RiviumStorage {
     this.apiKey = config.apiKey;
     this.baseUrl = API_BASE_URL;
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
-    this._userId = config.userId ?? null;
     this.tokenProvider = config.tokenProvider ?? null;
     this.staticUserToken = config.userToken ?? null;
-  }
-
-  /// Legacy: set the user id sent as `x-user-id` for bucket rules.
-  ///
-  /// The server cannot verify a client-chosen id; use `tokenProvider` (or
-  /// `setUserToken`) instead. Ignored by the server whenever a token is sent.
-  setUserId(userId: string | null): void {
-    this._userId = userId;
-  }
-
-  /// Get the current user ID
-  get userId(): string | null {
-    return this._userId;
+    const wait = config.userTokenWaitTimeout;
+    this.userTokenWaitTimeout = typeof wait === 'number' && wait >= 0 ? wait : null;
   }
 
   // ==========================================
@@ -141,19 +145,114 @@ export class RiviumStorage {
   /// With a `tokenProvider`, the token is used until it nears expiry and then
   /// the provider is asked again; `null` makes the next request ask the
   /// provider. Without one, the token is used as is until you replace it.
+  ///
+  /// A token releases every call waiting for one (`isAwaitingUserToken`), in
+  /// the order they were made. `null` leaves waiting calls waiting.
   async setUserToken(token: string | null): Promise<void> {
     if (this.tokenProvider) {
+      this.tokenGeneration++;
+      this.userTokenInFlight = null;
       this.userToken = token;
       this.userTokenExpiresAt = token ? tokenExpiry(token) : 0;
     } else {
       this.staticUserToken = token;
     }
+    this.releaseUserTokenWaiters(token);
   }
 
   /// Ask `tokenProvider` again. Call this when the user signs in or out.
+  /// When it now returns a token, calls waiting for one go on.
   async refreshUserToken(): Promise<void> {
     this.invalidateUserToken();
-    await this.ensureUserToken();
+    this.releaseUserTokenWaiters(await this.ensureUserToken());
+  }
+
+  /// True while at least one call is waiting for a user token: file requests
+  /// need a signed-in user, and no token is held and `tokenProvider` (if any)
+  /// returned `null`. Show your sign-in screen; the calls go on by themselves
+  /// after `setUserToken(token)` or `refreshUserToken()`.
+  get isAwaitingUserToken(): boolean {
+    return this.tokenWaiters.length > 0;
+  }
+
+  /// Called once each time calls start waiting for a user token. Returns a
+  /// function that removes the callback.
+  onAwaitingUserToken(callback: () => void): () => void {
+    this.awaitingUserTokenListeners.add(callback);
+    return () => {
+      this.awaitingUserTokenListeners.delete(callback);
+    };
+  }
+
+  /// The token for a file request: the held one, else the provider's answer,
+  /// else wait until the app signs a user in.
+  private async userTokenForRequest(): Promise<string> {
+    const token = await this.ensureUserToken();
+    return token ?? this.waitForUserToken();
+  }
+
+  /// The token held right now, without asking the provider.
+  private heldUserToken(): string | null {
+    return this.tokenProvider ? this.userToken : this.staticUserToken;
+  }
+
+  /// Resolves with the next user token (`setUserToken`, `refreshUserToken`, or
+  /// the provider answering another request). Nothing is sent meanwhile. With
+  /// `userTokenWaitTimeout` it rejects with `token_required` (401) after that
+  /// many milliseconds.
+  private waitForUserToken(): Promise<string> {
+    const held = this.heldUserToken();
+    if (held) return Promise.resolve(held);
+    return new Promise<string>((resolve, reject) => {
+      const waiter = { resolve, timer: null as ReturnType<typeof setTimeout> | null };
+      const startsWaiting = this.tokenWaiters.length === 0;
+      this.tokenWaiters.push(waiter);
+      if (this.userTokenWaitTimeout !== null) {
+        waiter.timer = setTimeout(() => {
+          const i = this.tokenWaiters.indexOf(waiter);
+          if (i < 0) return;
+          this.tokenWaiters.splice(i, 1);
+          reject(
+            new RiviumStorageException(
+              'No Rivium user token arrived within userTokenWaitTimeout. File requests need a signed-in user: sign the user in, then call setUserToken() or refreshUserToken().',
+              401,
+              StorageErrorCode.TokenRequired,
+            ),
+          );
+        }, this.userTokenWaitTimeout);
+      }
+      if (startsWaiting) {
+        for (const listener of Array.from(this.awaitingUserTokenListeners)) {
+          try {
+            listener();
+          } catch (e) {
+            console.error('[RiviumStorage] onAwaitingUserToken callback threw:', e);
+          }
+        }
+      }
+    });
+  }
+
+  /// Lets every waiting call go on with `token`, in the order they asked.
+  private releaseUserTokenWaiters(token: string | null): void {
+    if (!token || this.tokenWaiters.length === 0) return;
+    const waiters = this.tokenWaiters;
+    this.tokenWaiters = [];
+    for (const waiter of waiters) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.resolve(token);
+    }
+  }
+
+  /// The server said `token_required` although `token` was sent: forget it,
+  /// so the call waits for a new one instead of sending it again.
+  private dropUserToken(token: string | null): void {
+    if (!token) return;
+    if (this.tokenProvider) {
+      if (this.userToken === token) this.invalidateUserToken();
+    } else if (this.staticUserToken === token) {
+      this.staticUserToken = null;
+    }
   }
 
   /// The current user token, fetched through `tokenProvider` when needed.
@@ -172,67 +271,97 @@ export class RiviumStorage {
     if (this.userTokenInFlight) return this.userTokenInFlight;
 
     const provider = this.tokenProvider;
-    this.userTokenInFlight = (async () => {
+    const generation = this.tokenGeneration;
+    // `settled` covers a provider that throws synchronously: the finally
+    // below then runs before `inFlight` is assigned.
+    let settled = false;
+    let inFlight: Promise<string | null> | null = null;
+    inFlight = (async () => {
       try {
         const token = (await provider()) ?? null;
+        // Signed out or replaced meanwhile: this answer belongs to the old user.
+        if (generation !== this.tokenGeneration) return this.userToken;
         this.userToken = token;
         this.userTokenExpiresAt = token ? tokenExpiry(token) : 0;
+        this.releaseUserTokenWaiters(token);
         return token;
       } catch (e) {
         console.error('[RiviumStorage] tokenProvider failed:', e);
         // Keep the old token: it may still be valid, and the server decides.
         return this.userToken;
       } finally {
-        this.userTokenInFlight = null;
+        settled = true;
+        if (this.userTokenInFlight === inFlight) this.userTokenInFlight = null;
       }
     })();
+    if (!settled) this.userTokenInFlight = inFlight;
 
-    return this.userTokenInFlight;
+    return inFlight;
   }
 
   /** Drop the cached token so the next request asks the provider again. */
   private invalidateUserToken(): void {
+    this.tokenGeneration++;
+    this.userTokenInFlight = null;
     this.userToken = null;
     this.userTokenExpiresAt = 0;
   }
 
-  /// Identity headers: the user token when there is one (and then no
-  /// `x-user-id`, which the server ignores anyway), else the legacy user id.
-  /// Every request also names the SDK (`X-Rivium-SDK: <name>/<version>`).
-  private async authHeaders(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {
-      'x-api-key': this.apiKey,
-      [SDK_HEADER]: SDK_HEADER_VALUE,
-    };
-    const token = await this.ensureUserToken();
-    if (token) {
-      headers['x-user-token'] = token;
-    } else if (this._userId) {
-      headers['x-user-id'] = this._userId;
-    }
-    return headers;
-  }
-
-  /// Every API call goes through here. On a 401 `token_expired` or
+  /// Every API call goes through here. Each request names the project
+  /// (`x-api-key`) and the SDK (`X-Rivium-SDK: <name>/<version>`) and carries
+  /// the user token when one is held.
+  ///
+  /// `userToken: true` (file and transform routes) never sends without a
+  /// token: the call waits for one (see `isAwaitingUserToken`), and a 401
+  /// `token_required` puts it back to waiting. On a 401 `token_expired` or
   /// `token_invalid` the provider is asked once more and the request retried
   /// once, so a transient expiry never reaches the caller.
+  ///
+  /// The `timeout` covers each HTTP attempt, never the wait for a token.
+  /// A timed-out attempt rejects with an `AbortError`.
   private async authedFetch(
     url: string,
     init: RequestInit,
-    extraHeaders: Record<string, string> = {},
-    retry = true,
+    options: { extraHeaders?: Record<string, string>; transport?: Transport; userToken?: boolean } = {},
   ): Promise<Response> {
-    const headers = { ...(await this.authHeaders()), ...extraHeaders };
-    const response = await fetch(url, { ...init, headers });
+    const transport = options.transport ?? fetchTransport;
+    const needsToken = options.userToken === true;
+    let refreshed = false;
+    let token = needsToken ? await this.userTokenForRequest() : await this.ensureUserToken();
 
-    if (response.status === 401 && retry && this.tokenProvider) {
-      const code = await readErrorCode(response);
-      if (code === 'token_expired' || code === 'token_invalid') {
-        this.invalidateUserToken();
-        return this.authedFetch(url, init, extraHeaders, false);
+    for (;;) {
+      const headers: Record<string, string> = {
+        'x-api-key': this.apiKey,
+        [SDK_HEADER]: SDK_HEADER_VALUE,
+      };
+      if (token) headers['x-user-token'] = token;
+      Object.assign(headers, options.extraHeaders);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+      let response: Response;
+      try {
+        // Never follow a redirect: the next hop would receive the key and user token.
+        response = await transport(url, { ...init, headers, redirect: 'error', signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
       }
+
+      if (response.status !== 401) return response;
+      const code = await readErrorCode(response);
+      if (needsToken && code === 'token_required') {
+        this.dropUserToken(token);
+        token = await this.waitForUserToken();
+        continue;
+      }
+      if ((code === 'token_expired' || code === 'token_invalid') && this.tokenProvider && !refreshed) {
+        refreshed = true;
+        this.invalidateUserToken();
+        token = needsToken ? await this.userTokenForRequest() : await this.ensureUserToken();
+        continue;
+      }
+      return response;
     }
-    return response;
   }
 
   /// The exception for a failed response, with the server's `code`.
@@ -245,7 +374,8 @@ export class RiviumStorage {
     let code: string | undefined;
     try {
       const error: any = await response.json();
-      if (useServerMessage && error?.message) message = error.message;
+      const serverMessage = Array.isArray(error?.message) ? error.message.join(', ') : error?.message;
+      if (useServerMessage && typeof serverMessage === 'string' && serverMessage) message = serverMessage;
       if (typeof error?.code === 'string') code = error.code;
     } catch {
       // ignore parse errors
@@ -269,23 +399,19 @@ export class RiviumStorage {
       body?: Record<string, unknown>;
       fromJson?: (data: Record<string, unknown>) => T;
       fromJsonList?: (data: unknown[]) => T;
+      /** File and transform routes: wait for a user token before sending. */
+      userToken?: boolean;
     },
   ): Promise<T> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
     try {
       const response = await this.authedFetch(
         `${this.baseUrl}${endpoint}`,
         {
           method,
           body: options?.body ? JSON.stringify(options.body) : undefined,
-          signal: controller.signal,
         },
-        { 'Content-Type': 'application/json' },
+        { extraHeaders: { 'Content-Type': 'application/json' }, userToken: options?.userToken },
       );
-
-      clearTimeout(timeoutId);
 
       if (response.status >= 400) {
         throw await this.errorFrom(response, `HTTP ${response.status}`);
@@ -311,7 +437,6 @@ export class RiviumStorage {
 
       return data as T;
     } catch (e) {
-      clearTimeout(timeoutId);
       if (e instanceof RiviumStorageException) throw e;
       if ((e as Error).name === 'AbortError') {
         throw new RiviumStorageException('Request timeout', 408, 'TIMEOUT');
@@ -333,14 +458,14 @@ export class RiviumStorage {
 
   /// Get bucket by ID
   async getBucket(bucketId: string): Promise<Bucket> {
-    return this.request<Bucket>('GET', `/api/v1/buckets/${bucketId}`, {
+    return this.request<Bucket>('GET', `/api/v1/buckets/${bucketSegment(bucketId)}`, {
       fromJson: (data) => data as unknown as Bucket,
     });
   }
 
   /// Get bucket by name
   async getBucketByName(name: string): Promise<Bucket> {
-    return this.request<Bucket>('GET', `/api/v1/buckets/name/${name}`, {
+    return this.request<Bucket>('GET', `/api/v1/buckets/name/${bucketSegment(name)}`, {
       fromJson: (data) => data as unknown as Bucket,
     });
   }
@@ -354,58 +479,74 @@ export class RiviumStorage {
   /// [bucketId] - Bucket ID or name
   /// [path] - File path within the bucket
   /// [data] - File content as File, Blob, Uint8Array, or string
-  /// [options] - Upload options (contentType, metadata)
+  /// [options] - Upload options (contentType, metadata, onProgress)
+  ///
+  /// Follow the upload with `onProgress`:
+  /// `{ onProgress: ({ bytesSent, totalBytes }) => bar.value = bytesSent / totalBytes }`
   async upload(
     bucketId: string,
     path: string,
     data: File | Blob | Uint8Array | string,
     options: UploadOptions = {},
   ): Promise<StorageFile> {
+    const bucket = bucketSegment(bucketId);
+    // Normalised like the server stores it; `?`, `#`, `%`, text-direction
+    // characters and `.` / `..` segments are refused before anything is sent.
+    const filePath = checkUploadPath(path);
     const formData = new FormData();
 
-    const contentType = options.contentType ?? getMimeType(path);
-    const fileName = path.split('/').pop() ?? 'file';
+    const contentType = uploadContentType(filePath, data, options.contentType);
+    const fileName = filePath.split('/').pop() ?? 'file';
 
     let blob: Blob;
-    if (data instanceof File) {
-      blob = data;
-    } else if (typeof data === 'string') {
+    if (typeof data === 'string') {
       blob = new Blob([data], { type: contentType });
     } else if (data instanceof Blob) {
-      blob = data;
+      // A File / Blob goes as is when it already has the type; else the same
+      // bytes are re-labelled (no copy), so the multipart part carries it.
+      blob = data.type === contentType ? data : new Blob([data], { type: contentType });
     } else {
       blob = new Blob([data as BlobPart], { type: contentType });
     }
 
     formData.append('file', blob, fileName);
-    formData.append('path', path);
+    formData.append('path', filePath);
 
     if (options.metadata) {
       formData.append('metadata', JSON.stringify(options.metadata));
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    // fetch can't report upload progress, so with onProgress the same request
+    // goes through XMLHttpRequest. Where there is none (a service worker),
+    // fetch sends it and onProgress gets only the final event.
+    const onProgress = options.onProgress;
+    const canTrack = typeof XMLHttpRequest !== 'undefined';
+    const transport = onProgress && canTrack ? xhrTransport(onProgress) : fetchTransport;
+
 
     try {
       const response = await this.authedFetch(
-        `${this.baseUrl}/api/v1/buckets/${bucketId}/files`,
+        `${this.baseUrl}/api/v1/buckets/${bucket}/files`,
         {
           method: 'POST',
           body: formData,
-          signal: controller.signal,
+        },
+        {
+          userToken: true,
+          transport,
         },
       );
-
-      clearTimeout(timeoutId);
 
       if (response.status >= 400) {
         throw await this.errorFrom(response, `Upload failed: ${response.status}`);
       }
 
-      return (await response.json()) as StorageFile;
+      const uploaded = (await response.json()) as StorageFile;
+      if (onProgress && !canTrack) {
+        createProgressReporter(onProgress)(blob.size, blob.size, true);
+      }
+      return uploaded;
     } catch (e) {
-      clearTimeout(timeoutId);
       if (e instanceof RiviumStorageException) throw e;
       if ((e as Error).name === 'AbortError') {
         throw new RiviumStorageException('Request timeout', 408, 'TIMEOUT');
@@ -428,17 +569,19 @@ export class RiviumStorage {
 
     return this.request<ListFilesResult>(
       'GET',
-      `/api/v1/buckets/${bucketId}/files${query}`,
+      `/api/v1/buckets/${bucketSegment(bucketId)}/files${query}`,
       {
         fromJson: (data) => data as unknown as ListFilesResult,
+        userToken: true,
       },
     );
   }
 
   /// Get file by ID
   async getFile(fileId: string): Promise<StorageFile> {
-    return this.request<StorageFile>('GET', `/api/v1/files/${fileId}`, {
+    return this.request<StorageFile>('GET', `/api/v1/files/${fileIdSegment(fileId)}`, {
       fromJson: (data) => data as unknown as StorageFile,
+      userToken: true,
     });
   }
 
@@ -446,46 +589,48 @@ export class RiviumStorage {
   async getFileByPath(bucketId: string, path: string): Promise<StorageFile> {
     return this.request<StorageFile>(
       'GET',
-      `/api/v1/buckets/${bucketId}/files/${path}`,
+      `/api/v1/buckets/${bucketSegment(bucketId)}/files/${encodePathSegments(path)}`,
       {
         fromJson: (data) => data as unknown as StorageFile,
+        userToken: true,
       },
     );
   }
 
   /// Download file content
   async download(fileId: string): Promise<ArrayBuffer> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
       const response = await this.authedFetch(
-        `${this.baseUrl}/api/v1/files/${fileId}/download`,
-        { signal: controller.signal },
+        `${this.baseUrl}/api/v1/files/${fileIdSegment(fileId)}/download`,
+        {},
+        { userToken: true },
       );
 
-      clearTimeout(timeoutId);
-
       if (response.status >= 400) {
-        throw await this.errorFrom(response, `Download failed: ${response.status}`, false);
+        throw await this.errorFrom(response, `Download failed: ${response.status}`);
       }
 
       return response.arrayBuffer();
     } catch (e) {
-      clearTimeout(timeoutId);
       if (e instanceof RiviumStorageException) throw e;
+      if ((e as Error).name === 'AbortError') {
+        throw new RiviumStorageException('Request timeout', 408, 'TIMEOUT');
+      }
       throw new RiviumStorageException(`Download error: ${(e as Error).message}`);
     }
   }
 
   /// Delete a file by ID
   async delete(fileId: string): Promise<void> {
-    await this.request('DELETE', `/api/v1/files/${fileId}`);
+    await this.request('DELETE', `/api/v1/files/${fileIdSegment(fileId)}`, { userToken: true });
   }
 
   /// Delete a file by path in bucket
   async deleteByPath(bucketId: string, path: string): Promise<void> {
-    await this.request('DELETE', `/api/v1/buckets/${bucketId}/files/${path}`);
+    await this.request('DELETE', `/api/v1/buckets/${bucketSegment(bucketId)}/files/${encodePathSegments(path)}`, {
+      userToken: true,
+    });
   }
 
   /// Delete multiple files by IDs
@@ -495,54 +640,77 @@ export class RiviumStorage {
     return this.request<DeleteManyResult>('POST', '/api/v1/files/delete-many', {
       body: { ids: fileIds },
       fromJson: (data) => data as unknown as DeleteManyResult,
+      userToken: true,
     });
   }
 
   // ==========================================
-  // URL Generation
+  // Links
   // ==========================================
 
-  /// Get public URL for a file (only works for public buckets)
+  /// The public link of a file in a PUBLIC bucket:
+  /// `https://storage.rivium.co/public/<bucketId>/<path>`. Anyone can open
+  /// it without a key or token, so it goes straight into an image view.
+  /// One request to `GET /api/v1/files/:id/url`; a file in a private bucket
+  /// is refused with `403` (it has no public link: use `download()`, or a
+  /// signed link from your server).
   ///
-  /// NOTE: a URL cannot carry the user token (or any header). It works for
-  /// public buckets or with a signed URL from your server; for a private file
-  /// use `download()`, which sends the token.
+  /// With `transforms` the link is a resized / converted image, still with
+  /// no headers: `getPublicUrl(id, { width: 600, format: 'webp' })` gives
+  /// `.../public/<bucketId>/<path>?w=600&f=webp`, for `<img src>`, `srcset`
+  /// or React Native's `<Image source={{ uri }}>`. The options are checked
+  /// first (`invalid_transform`, 400, before any request) and written in a
+  /// fixed order, so the same options always give the same URL: the CDN and
+  /// the server cache it as one image (replacing the file updates it). One
+  /// image keeps at most 50 different variants (`too_many_variants`, 429):
+  /// use a few fixed sizes. Plans without image transforms (Free) answer
+  /// `plan_feature_locked` (403).
+  async getPublicUrl(fileId: string, transforms?: ImageTransforms): Promise<string> {
+    // invalid_transform before any request.
+    const query = transformQuery(transforms);
+    // Works with the key alone (no user token), so it never waits for one.
+    const result = await this.request<{ url: string }>('GET', `/api/v1/files/${fileIdSegment(fileId)}/url`);
+    return query ? publicImageUrl(result.url, transforms) : result.url;
+  }
+
+  /// The image URL for a public link you already have (from `getPublicUrl()`,
+  /// saved in your database), with no request: the link plus the transform
+  /// options, checked and written exactly as `getPublicUrl(id, transforms)`
+  /// writes them. Throws `invalid_transform` (400) for an option the server
+  /// would refuse and `invalid_path` (400) when `publicUrl` isn't a public
+  /// file link. Also exported as the function `publicImageUrl`.
+  static publicImageUrl(publicUrl: string, transforms?: ImageTransforms): string {
+    return publicImageUrl(publicUrl, transforms);
+  }
+
+  /// The API address `GET /api/v1/files/:id/url`. Called with the
+  /// `x-api-key` header it answers `{ url }`, the public link above; the
+  /// address itself is not a link to the file. Use `getPublicUrl()`, which
+  /// makes that request for you.
   getUrl(fileId: string): string {
-    return `${this.baseUrl}/api/v1/files/${fileId}/url`;
+    return `${this.baseUrl}/api/v1/files/${fileIdSegment(fileId)}/url`;
   }
 
-  /// Get URL with image transformations
+  /// The API address of a transformed image:
+  /// `/api/v1/transform/:id?w=&h=&fit=&f=&q=&blur=&sharpen=&rotate=`.
   ///
-  /// [fileId] - The file ID
-  /// [transforms] - Image transformation options
+  /// Options are checked first: `format` jpeg / png / webp / avif, `fit`
+  /// cover / contain / fill / inside / outside, `width` / `height` 1..4096
+  /// (larger values are sent as 4096), `quality` 1..100, `blur` 0..20,
+  /// `sharpen` 0..10; anything else throws `invalid_transform` (400).
   ///
-  /// NOTE: a URL cannot carry the user token (or any header). It works for
-  /// public buckets or with a signed URL from your server; for a private file
-  /// use `download()`, which sends the token.
+  /// Like every `/api/v1` address it needs the `x-api-key` header (and the
+  /// user token where your rules ask for one), so load it with `fetch` and
+  /// headers, not as a plain `<img src>`.
   getTransformUrl(fileId: string, transforms?: ImageTransforms): string {
-    const params: string[] = [];
-
-    if (transforms) {
-      if (transforms.width) params.push(`w=${transforms.width}`);
-      if (transforms.height) params.push(`h=${transforms.height}`);
-      if (transforms.fit) params.push(`fit=${transforms.fit}`);
-      if (transforms.format) params.push(`f=${transforms.format}`);
-      if (transforms.quality) params.push(`q=${transforms.quality}`);
-      if (transforms.blur) params.push(`blur=${transforms.blur}`);
-      if (transforms.sharpen) params.push(`sharpen=${transforms.sharpen}`);
-      if (transforms.rotate) params.push(`rotate=${transforms.rotate}`);
-    }
-
-    const query = params.length > 0 ? `?${params.join('&')}` : '';
-    return `${this.baseUrl}/api/v1/transform/${fileId}${query}`;
+    const query = transformQuery(transforms);
+    return `${this.baseUrl}/api/v1/transform/${fileIdSegment(fileId)}${query}`;
   }
 
-  /// Get download URL (for direct access without SDK)
-  ///
-  /// NOTE: a URL cannot carry the user token (or any header). It works for
-  /// public buckets or with a signed URL from your server; for a private file
-  /// use `download()`, which sends the token.
+  /// The API address of a file's bytes, `/api/v1/files/:id/download`. It
+  /// needs the `x-api-key` header (and the user token where your rules ask
+  /// for one); `download()` sends them for you.
   getDownloadUrl(fileId: string): string {
-    return `${this.baseUrl}/api/v1/files/${fileId}/download`;
+    return `${this.baseUrl}/api/v1/files/${fileIdSegment(fileId)}/download`;
   }
 }
